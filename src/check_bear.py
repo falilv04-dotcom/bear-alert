@@ -61,7 +61,7 @@ def save_json(path: Path, data: Any) -> None:
         )
 
 
-def normalize_lines(soup: BeautifulSoup) -> list\[str]:
+def normalize_lines(soup):
     """
     HTMLから表示されている文字を取り出す。
     scriptやstyleなどは除外する。
