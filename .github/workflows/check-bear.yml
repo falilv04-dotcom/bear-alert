@@ -2,8 +2,8 @@ name: Check bear information without RSS
 
 on:
   schedule:
-    # 毎時03分、13分、23分、33分、43分、53分
-    - cron: "3,13,23,33,43,53 * * * *"
+    # 毎時00分、10分、20分、30分、40分、50分
+    - cron: "0,10,20,30,40,50 * * * *"
 
   # Actions画面から手動実行するための設定
   workflow_dispatch:
