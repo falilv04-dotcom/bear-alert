@@ -1,0 +1,62 @@
+name: Check bear information without RSS
+
+on:
+  schedule:
+    # 毎時03分、13分、23分、33分、43分、53分
+    - cron: "3,13,23,33,43,53 * * * *"
+
+  # Actions画面から手動実行するための設定
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bear-alert
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install libraries
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check web pages
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          python src/check_bear.py
+
+      - name: Save notification state
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/notified.json
+
+          if git diff --cached --quiet; then
+            echo "保存する変更はありません"
+          else
+            git commit -m "Update bear information state"
+            git push
+          fi
