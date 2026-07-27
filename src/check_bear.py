@@ -27,12 +27,6 @@ BEAR_RE = re.compile(
     re.IGNORECASE
 )
 
-# 多羅尾周辺として扱う地域キーワード
-AREA_RE = re.compile(
-    r"(多羅尾|甲賀市|信楽町|甲賀市信楽町)",
-    re.IGNORECASE
-)
-
 
 def now_iso() -> str:
     """現在時刻をISO形式で返す"""
@@ -64,7 +58,7 @@ def save_json(path: Path, data: Any) -> None:
 def normalize_lines(soup):
     """
     HTMLから表示されている文字を取り出す。
-    scriptやstyleなどは除外する。
+    script、styleなどは除外する。
     """
 
     for tag in soup.find_all(
@@ -72,12 +66,19 @@ def normalize_lines(soup):
     ):
         tag.decompose()
 
-    text = soup.get_text("\n", strip=True)
+    text = soup.get_text(
+        "\n",
+        strip=True
+    )
 
     lines = []
 
     for line in text.splitlines():
-        line = re.sub(r"\s+", " ", line).strip()
+        line = re.sub(
+            r"\s+",
+            " ",
+            line
+        ).strip()
 
         if line:
             lines.append(line)
@@ -87,7 +88,8 @@ def normalize_lines(soup):
 
 def extract_target_text(html_text: str) -> str:
     """
-    HTMLから、クマ・地域に関係しそうな文字を取り出す。
+    HTMLから、クマに関係する文字を取り出す。
+    地域キーワードは使用しない。
     """
 
     soup = BeautifulSoup(
@@ -99,17 +101,14 @@ def extract_target_text(html_text: str) -> str:
 
     all_text = "\n".join(lines)
 
-    has_bear = bool(BEAR_RE.search(all_text))
-    has_area = bool(AREA_RE.search(all_text))
-
-    # クマと地域の両方がなければ対象外
-    if not has_bear or not has_area:
+    # クマ関連キーワードがなければ対象外
+    if not BEAR_RE.search(all_text):
         return ""
 
-    selected_lines: list[str] = []
+    selected_lines = []
 
     for index, line in enumerate(lines):
-        if BEAR_RE.search(line) or AREA_RE.search(line):
+        if BEAR_RE.search(line):
             start = max(0, index - 1)
             end = min(len(lines), index + 2)
 
@@ -155,7 +154,10 @@ def send_email(items: list[dict[str, str]]) -> None:
     )
 
     smtp_port = int(
-        os.getenv("SMTP_PORT", "465")
+        os.getenv(
+            "SMTP_PORT",
+            "465"
+        )
     )
 
     smtp_user = os.getenv(
@@ -206,7 +208,10 @@ def send_email(items: list[dict[str, str]]) -> None:
         "",
     ]
 
-    for number, item in enumerate(items, start=1):
+    for number, item in enumerate(
+        items,
+        start=1
+    ):
         body_parts.extend(
             [
                 f"----- 情報 {number} -----",
@@ -229,7 +234,9 @@ def send_email(items: list[dict[str, str]]) -> None:
     message["Subject"] = "【クマ情報】新しい情報があります"
     message["From"] = mail_from
     message["To"] = ", ".join(mail_to)
-    message.set_content("\n".join(body_parts))
+    message.set_content(
+        "\n".join(body_parts)
+    )
 
     with smtplib.SMTP_SSL(
         smtp_host,
@@ -262,7 +269,7 @@ def main() -> None:
     if "sources" not in state:
         state["sources"] = {}
 
-    new_items: list[dict[str, str]] = []
+    new_items = []
     state_changed = False
     success_count = 0
 
@@ -280,12 +287,17 @@ def main() -> None:
 
             if not target_text:
                 print(
-                    "クマ・地域情報をページ内から検出できませんでした"
+                    "クマ関連情報をページ内から検出できませんでした"
                 )
                 continue
 
-            current_hash = make_hash(target_text)
-            previous = state["sources"].get(name)
+            current_hash = make_hash(
+                target_text
+            )
+
+            previous = state["sources"].get(
+                name
+            )
 
             if previous is None:
                 # 初回は通知せず、現在の状態を保存する
@@ -305,7 +317,7 @@ def main() -> None:
             elif previous.get("hash") != current_hash:
                 # 前回と内容が変わった場合
                 print(
-                    "ページ内の対象情報が変わりました"
+                    "ページ内のクマ情報が変わりました"
                 )
 
                 new_items.append(
@@ -344,7 +356,11 @@ def main() -> None:
 
     # 状態を保存
     if state_changed:
-        save_json(STATE_FILE, state)
+        save_json(
+            STATE_FILE,
+            state
+        )
+
         print("通知済み情報を保存しました")
 
 
