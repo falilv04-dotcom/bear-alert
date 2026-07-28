@@ -23,7 +23,7 @@ STATE_FILE = ROOT_DIR / "data" / "notified.json"
 
 # クマ関連キーワード
 BEAR_RE = re.compile(
-    r"(熊|クマ|くま|ツキノワグマ)",
+    r"(熊|クマ|くま|ツキノワグマ|目撃|出没|注意)",
     re.IGNORECASE
 )
 
