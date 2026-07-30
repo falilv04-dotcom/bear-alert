@@ -84,6 +84,94 @@ def normalize_lines(soup):
             lines.append(line)
 
     return lines
+    # --- 以下を normalize_lines の直後に追加してください ---
+
+import hashlib
+from typing import List, Dict
+
+def make_item_id(title: str, url: str, text: str) -> str:
+    """
+    項目の識別子を作成します。URLがあればURLのハッシュを使い、
+    なければタイトル＋本文のハッシュを使います。
+    """
+    if url:
+        return hashlib.sha256(url.encode("utf-8")).hexdigest()
+    key = (title or "") + "\n" + (text or "")
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+def extract_items_from_html(html_text: str, source: dict) -> List[Dict[str, str]]:
+    """
+    HTMLから項目（記事・目撃情報）を抽出して list[dict] を返します。
+    各 dict は {id, title, url, text} を含みます。
+    汎用的な抽出を行います。サイトに合わせて selector を追加してください。
+    """
+    soup = BeautifulSoup(html_text, "html.parser")
+    items: List[Dict[str, str]] = []
+
+    # 1) article タグがあれば優先して使う
+    for a in soup.find_all("article"):
+        title_tag = a.find(["h1", "h2", "h3", "a"])
+        title = title_tag.get_text(" ", strip=True) if title_tag else ""
+        link_tag = a.find("a", href=True)
+        link = link_tag["href"] if link_tag else ""
+        text = a.get_text(" ", strip=True)
+        item_id = make_item_id(title, link, text)
+        items.append({"id": item_id, "title": title, "url": link, "text": text})
+
+    if items:
+        return items
+
+    # 2) ul/li のニュースリストにある a タグから抽出
+    for ul in soup.find_all("ul"):
+        a_tags = ul.find_all("a", href=True)
+        if len(a_tags) >= 1:
+            for a_tag in a_tags:
+                title = a_tag.get_text(" ", strip=True)
+                link = a_tag["href"]
+                parent_text = a_tag.find_parent().get_text(" ", strip=True) if a_tag.find_parent() else ""
+                item_id = make_item_id(title, link, parent_text)
+                items.append({"id": item_id, "title": title, "url": link, "text": parent_text})
+
+    if items:
+        return items
+
+    # 3) 最後に a タグ単体から拾う
+    for a_tag in soup.find_all("a", href=True):
+        title = a_tag.get_text(" ", strip=True)
+        link = a_tag["href"]
+        parent_text = a_tag.find_parent().get_text(" ", strip=True) if a_tag.find_parent() else ""
+        if title:
+            item_id = make_item_id(title, link, parent_text)
+            items.append({"id": item_id, "title": title, "url": link, "text": parent_text})
+
+    # 重複排除 (id で)
+    seen = set()
+    unique_items = []
+    for it in items:
+        if it["id"] not in seen:
+            unique_items.append(it)
+            seen.add(it["id"])
+
+    return unique_items
+
+
+def fetch_items(source: dict) -> List[Dict[str, str]]:
+    """
+    指定 source の URL を取得して extract_items_from_html を呼び出す。
+    """
+    url = source["url"]
+    response = requests.get(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; BearAlert/1.0)"},
+        timeout=30
+    )
+    response.raise_for_status()
+    html = response.text
+    items = extract_items_from_html(html, source)
+    print(f"{source.get('name')}: {len(items)} items extracted")
+    return items
+
+# --- ここまで追加 ---
 
 
 def extract_target_text(html_text: str) -> str:
@@ -282,63 +370,45 @@ def main() -> None:
         print(url)
 
         try:
-            target_text = fetch_page(source)
+            # 新方式: ページから複数の項目を抽出する
+            items = fetch_items(source)
             success_count += 1
 
-            if not target_text:
-                print(
-                    "クマ関連情報をページ内から検出できませんでした"
-                )
+            # state の既存ID群を取得（なければ空集合）
+            previous = state["sources"].get(name)
+            prev_ids = set(previous.get("items", {}).keys()) if previous else set()
+
+            # 初回は既存を通知せず記録する
+            if previous is None:
+                print("初回確認のため、既存項目は通知せず記録します")
+                state["sources"][name] = {
+                    "url": url,
+                    "items": {it["id"]: now_iso() for it in items}
+                }
+                state_changed = True
                 continue
 
-            current_hash = make_hash(
-                target_text
-            )
+            # 新規項目だけ抽出
+            new_items = []
+            for it in items:
+                if it["id"] not in prev_ids:
+                    # send_email 用に source 名を入れておく
+                    it["source_name"] = name
+                    new_items.append(it)
 
-            previous = state["sources"].get(
-                name
-            )
+            if new_items:
+                # 通知（既存の send_email を使うが本文は item 構造に合わせている前提）
+                send_email(new_items)
 
-            if previous is None:
-                # 初回は通知せず、現在の状態を保存する
-                print(
-                    "初回確認のため、通知せず記録します"
-                )
-
-                state["sources"][name] = {
-                    "url": url,
-                    "hash": current_hash,
-                    "text": target_text,
-                    "saved_at": now_iso()
-                }
+                # state に新規 id を追加
+                if name not in state["sources"]:
+                    state["sources"][name] = {"url": url, "items": {}}
+                for it in new_items:
+                    state["sources"][name]["items"][it["id"]] = now_iso()
 
                 state_changed = True
-
-            elif previous.get("hash") != current_hash:
-                # 前回と内容が変わった場合
-                print(
-                    "ページ内のクマ情報が変わりました"
-                )
-
-                new_items.append(
-                    {
-                        "name": name,
-                        "url": url,
-                        "text": target_text
-                    }
-                )
-
-                state["sources"][name] = {
-                    "url": url,
-                    "hash": current_hash,
-                    "text": target_text,
-                    "saved_at": now_iso()
-                }
-
-                state_changed = True
-
             else:
-                print("変更はありません")
+                print("新規項目はありません")
 
         except Exception as error:
             print(f"取得エラー: {error}")
