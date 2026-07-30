@@ -8,7 +8,7 @@ import smtplib
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Dict
 
 import requests
 from bs4 import BeautifulSoup
@@ -21,7 +21,7 @@ SOURCE_FILE = ROOT_DIR / "config" / "sources.json"
 STATE_FILE = ROOT_DIR / "data" / "notified.json"
 
 
-# クマ関連キーワード
+# クマ関連キーワード（必要に応じて調整）
 BEAR_RE = re.compile(
     r"(熊|クマ|くま|ツキノワグマ|目撃|出没|注意)",
     re.IGNORECASE
@@ -84,10 +84,11 @@ def normalize_lines(soup):
             lines.append(line)
 
     return lines
-    # --- 以下を normalize_lines の直後に追加してください ---
 
-import hashlib
-from typing import List, Dict
+
+# -------------------------
+# 項目抽出・ID生成の補助関数
+# -------------------------
 
 def make_item_id(title: str, url: str, text: str) -> str:
     """
@@ -98,6 +99,7 @@ def make_item_id(title: str, url: str, text: str) -> str:
         return hashlib.sha256(url.encode("utf-8")).hexdigest()
     key = (title or "") + "\n" + (text or "")
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
 
 def extract_items_from_html(html_text: str, source: dict) -> List[Dict[str, str]]:
     """
@@ -171,8 +173,10 @@ def fetch_items(source: dict) -> List[Dict[str, str]]:
     print(f"{source.get('name')}: {len(items)} items extracted")
     return items
 
-# --- ここまで追加 ---
 
+# -------------------------
+# 既存のテキスト抽出（残しておく）
+# -------------------------
 
 def extract_target_text(html_text: str) -> str:
     """
@@ -215,7 +219,7 @@ def make_hash(text: str) -> str:
 
 
 def fetch_page(source: dict[str, str]) -> str:
-    """Webページを取得する"""
+    """従来の単一テキスト取得（互換のため残す）"""
 
     response = requests.get(
         source["url"],
@@ -300,13 +304,20 @@ def send_email(items: list[dict[str, str]]) -> None:
         items,
         start=1
     ):
+        # 安全にキーを取得するように get を使う
+        source_name = item.get("name") or item.get("source_name", "")
+        title = item.get("title", "")
+        url = item.get("url", "")
+        text = item.get("text", "")
+
         body_parts.extend(
             [
                 f"----- 情報 {number} -----",
-                f"情報源: {item['name']}",
-                f"URL: {item['url']}",
+                f"情報源: {source_name}",
+                f"タイトル: {title}",
+                f"URL: {url}",
                 "",
-                item["text"],
+                text,
                 "",
             ]
         )
@@ -357,7 +368,6 @@ def main() -> None:
     if "sources" not in state:
         state["sources"] = {}
 
-    new_items = []
     state_changed = False
     success_count = 0
 
@@ -397,7 +407,11 @@ def main() -> None:
                     new_items.append(it)
 
             if new_items:
-                # 通知（既存の send_email を使うが本文は item 構造に合わせている前提）
+                # 互換性維持のため、send_email に渡す前に必ず 'name' を設定します
+                for it in new_items:
+                    it['name'] = it.get('source_name', name)
+
+                # 通知（既存の send_email を使う）
                 send_email(new_items)
 
                 # state に新規 id を追加
@@ -417,12 +431,6 @@ def main() -> None:
         raise RuntimeError(
             "すべてのWebページの取得に失敗しました"
         )
-
-    # 新しい情報がある場合だけメール送信
-    if new_items:
-        send_email(new_items)
-    else:
-        print("新しい情報はありません")
 
     # 状態を保存
     if state_changed:
