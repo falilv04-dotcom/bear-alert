@@ -21,147 +21,98 @@ SOURCE_FILE = ROOT_DIR / "config" / "sources.json"
 STATE_FILE = ROOT_DIR / "data" / "notified.json"
 
 
-# クマ関連キーワード（必要に応じて調整）
-BEAR_RE = re.compile(
-    r"(熊|クマ|くま|ツキノワグマ|目撃|出没|注意)",
-    re.IGNORECASE
-)
+# 監視する見出し（ページ上の正確な文章に合わせてください）
+HEADING_TO_WATCH = "滋賀県の最新出没傾向"
 
 
 def now_iso() -> str:
-    """現在時刻をISO形式で返す"""
     return datetime.now(timezone.utc).isoformat()
 
 
 def load_json(path: Path, default: Any) -> Any:
-    """JSONファイルを読み込む"""
     if not path.exists():
         return default
-
-    with path.open("r", encoding="utf-8") as file:
-        return json.load(file)
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def save_json(path: Path, data: Any) -> None:
-    """JSONファイルを保存する"""
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    with path.open("w", encoding="utf-8") as file:
-        json.dump(
-            data,
-            file,
-            ensure_ascii=False,
-            indent=2
-        )
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def normalize_lines(soup):
-    """
-    HTMLから表示されている文字を取り出す。
-    script、styleなどは除外する。
-    """
-
-    for tag in soup.find_all(
-        ["script", "style", "noscript", "svg"]
-    ):
+def normalize_lines(soup: BeautifulSoup) -> List\[str]:
+    for tag in soup.find_all(["script", "style", "noscript", "svg"]):
         tag.decompose()
-
-    text = soup.get_text(
-        "\n",
-        strip=True
-    )
-
+    text = soup.get_text("\n", strip=True)
     lines = []
-
     for line in text.splitlines():
-        line = re.sub(
-            r"\s+",
-            " ",
-            line
-        ).strip()
-
+        line = re.sub(r"\s+", " ", line).strip()
         if line:
             lines.append(line)
-
     return lines
 
 
-# -------------------------
-# 項目抽出・ID生成の補助関数
-# -------------------------
-
-def make_item_id(title: str, url: str, text: str) -> str:
-    """
-    項目の識別子を作成します。URLがあればURLのハッシュを使い、
-    なければタイトル＋本文のハッシュを使います。
-    """
-    if url:
-        return hashlib.sha256(url.encode("utf-8")).hexdigest()
-    key = (title or "") + "\n" + (text or "")
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+def make_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def extract_items_from_html(html_text: str, source: dict) -> List[Dict[str, str]]:
+def extract_section_by_heading(html_text: str, heading_text: str) -> str:
     """
-    HTMLから項目（記事・目撃情報）を抽出して list[dict] を返します。
-    各 dict は {id, title, url, text} を含みます。
-    汎用的な抽出を行います。サイトに合わせて selector を追加してください。
+    指定見出しに続くセクションのテキストを返す。
+    見出しが見つからなければ空文字を返す。
     """
     soup = BeautifulSoup(html_text, "html.parser")
-    items: List[Dict[str, str]] = []
 
-    # 1) article タグがあれば優先して使う
-    for a in soup.find_all("article"):
-        title_tag = a.find(["h1", "h2", "h3", "a"])
-        title = title_tag.get_text(" ", strip=True) if title_tag else ""
-        link_tag = a.find("a", href=True)
-        link = link_tag["href"] if link_tag else ""
-        text = a.get_text(" ", strip=True)
-        item_id = make_item_id(title, link, text)
-        items.append({"id": item_id, "title": title, "url": link, "text": text})
+    # 1) 見出しタグ(h1..h6)を探す
+    heading = None
+    for tag_name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+        heading = soup.find(tag_name, string=lambda s: s and heading_text in s)
+        if heading:
+            break
 
-    if items:
-        return items
+    # 2) 見出しとして strong/b/p 等を探す
+    if not heading:
+        heading = soup.find(lambda tag: tag.name in ("strong", "b", "p", "div") and tag.get_text() and heading_text in tag.get_text())
 
-    # 2) ul/li のニュースリストにある a タグから抽出
-    for ul in soup.find_all("ul"):
-        a_tags = ul.find_all("a", href=True)
-        if len(a_tags) >= 1:
-            for a_tag in a_tags:
-                title = a_tag.get_text(" ", strip=True)
-                link = a_tag["href"]
-                parent_text = a_tag.find_parent().get_text(" ", strip=True) if a_tag.find_parent() else ""
-                item_id = make_item_id(title, link, parent_text)
-                items.append({"id": item_id, "title": title, "url": link, "text": parent_text})
+    if not heading:
+        return ""
 
-    if items:
-        return items
+    # 3) heading の次の兄弟要素を集める（上限あり）
+    texts = []
+    node = heading.next_sibling
+    count = 0
+    while node is not None and count < 50:
+        if getattr(node, "get_text", None):
+            txt = node.get_text(" ", strip=True)
+            if txt:
+                texts.append(txt)
+        elif isinstance(node, str):
+            s = node.strip()
+            if s:
+                texts.append(s)
+        node = node.next_sibling
+        count += 1
 
-    # 3) 最後に a タグ単体から拾う
-    for a_tag in soup.find_all("a", href=True):
-        title = a_tag.get_text(" ", strip=True)
-        link = a_tag["href"]
-        parent_text = a_tag.find_parent().get_text(" ", strip=True) if a_tag.find_parent() else ""
-        if title:
-            item_id = make_item_id(title, link, parent_text)
-            items.append({"id": item_id, "title": title, "url": link, "text": parent_text})
+    if texts:
+        return "\n".join(texts).strip()
 
-    # 重複排除 (id で)
-    seen = set()
-    unique_items = []
-    for it in items:
-        if it["id"] not in seen:
-            unique_items.append(it)
-            seen.add(it["id"])
+    # 4) 兄弟がなければ親要素のテキストから切り出す（フォールバック）
+    parent = heading.parent
+    if parent:
+        full = parent.get_text(" ", strip=True)
+        # 先頭の見出し文言を取り除く
+        full = full.replace(heading_text, "", 1).strip()
+        return full
 
-    return unique_items
+    return ""
 
 
-def fetch_items(source: dict) -> List[Dict[str, str]]:
-    """
-    指定 source の URL を取得して extract_items_from_html を呼び出す。
-    """
-    url = source["url"]
+def fetch_section_text(source: dict, heading_text: str) -> str:
+    url = source.get("url", "").strip()
+    if not url:
+        raise RuntimeError("source.url が空です")
     response = requests.get(
         url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; BearAlert/1.0)"},
@@ -169,129 +120,28 @@ def fetch_items(source: dict) -> List[Dict[str, str]]:
     )
     response.raise_for_status()
     html = response.text
-    items = extract_items_from_html(html, source)
-    print(f"{source.get('name')}: {len(items)} items extracted")
-    return items
+    return extract_section_by_heading(html, heading_text)
 
 
-# -------------------------
-# 既存のテキスト抽出（残しておく）
-# -------------------------
-
-def extract_target_text(html_text: str) -> str:
+def send_email(items: List[Dict[str, str]]) -> None:
     """
-    HTMLから、クマに関係する文字を取り出す。
-    地域キーワードは使用しない。
+    items: list of dict with keys: title, url, text, source_name (and optional name)
     """
-
-    soup = BeautifulSoup(
-        html_text,
-        "html.parser"
-    )
-
-    lines = normalize_lines(soup)
-
-    all_text = "\n".join(lines)
-
-    # クマ関連キーワードがなければ対象外
-    if not BEAR_RE.search(all_text):
-        return ""
-
-    selected_lines = []
-
-    for index, line in enumerate(lines):
-        if BEAR_RE.search(line):
-            start = max(0, index - 1)
-            end = min(len(lines), index + 2)
-
-            for selected in lines[start:end]:
-                if selected not in selected_lines:
-                    selected_lines.append(selected)
-
-    return "\n".join(selected_lines)
-
-
-def make_hash(text: str) -> str:
-    """文字列から比較用のハッシュ値を作成する"""
-    return hashlib.sha256(
-        text.encode("utf-8")
-    ).hexdigest()
-
-
-def fetch_page(source: dict[str, str]) -> str:
-    """従来の単一テキスト取得（互換のため残す）"""
-
-    response = requests.get(
-        source["url"],
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 "
-                "compatible; BearAlert/1.0"
-            )
-        },
-        timeout=30
-    )
-
-    response.raise_for_status()
-
-    return extract_target_text(response.text)
-
-
-def send_email(items: list[dict[str, str]]) -> None:
-    """新しい情報をメール送信する"""
-
-    smtp_host = os.getenv(
-        "SMTP_HOST",
-        "smtp.gmail.com"
-    )
-
-    smtp_port = int(
-        os.getenv(
-            "SMTP_PORT",
-            "465"
-        )
-    )
-
-    smtp_user = os.getenv(
-        "SMTP_USER",
-        ""
-    ).strip()
-
-    smtp_password = os.getenv(
-        "SMTP_PASSWORD",
-        ""
-    ).strip()
-
-    mail_from = os.getenv(
-        "MAIL_FROM",
-        smtp_user
-    ).strip()
-
-    mail_to_text = os.getenv(
-        "MAIL_TO",
-        ""
-    ).strip()
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "465"))
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
+    mail_from = os.getenv("MAIL_FROM", smtp_user).strip()
+    mail_to_text = os.getenv("MAIL_TO", "").strip()
 
     if not smtp_user:
-        raise RuntimeError(
-            "SMTP_USERが設定されていません"
-        )
-
+        raise RuntimeError("SMTP_USERが設定されていません")
     if not smtp_password:
-        raise RuntimeError(
-            "SMTP_PASSWORDが設定されていません"
-        )
-
+        raise RuntimeError("SMTP_PASSWORDが設定されていません")
     if not mail_to_text:
-        raise RuntimeError(
-            "MAIL_TOが設定されていません"
-        )
+        raise RuntimeError("MAIL_TOが設定されていません")
 
-    mail_to = [
-        address.strip()
-        for address in mail_to_text.split(",")
-        if address.strip()
-    ]
+    mail_to = [a.strip() for a in mail_to_text.split(",") if a.strip()]
 
     body_parts = [
         "クマに関する新しい情報が見つかりました。",
@@ -300,11 +150,7 @@ def send_email(items: list[dict[str, str]]) -> None:
         "",
     ]
 
-    for number, item in enumerate(
-        items,
-        start=1
-    ):
-        # 安全にキーを取得するように get を使う
+    for number, item in enumerate(items, start=1):
         source_name = item.get("name") or item.get("source_name", "")
         title = item.get("title", "")
         url = item.get("url", "")
@@ -330,40 +176,21 @@ def send_email(items: list[dict[str, str]]) -> None:
     )
 
     message = EmailMessage()
-    message["Subject"] = "【クマ情報】新しい情報があります"
+    message["Subject"] = "【クマ情報】該当セクションが更新されました"
     message["From"] = mail_from
     message["To"] = ", ".join(mail_to)
-    message.set_content(
-        "\n".join(body_parts)
-    )
+    message.set_content("\n".join(body_parts))
 
-    with smtplib.SMTP_SSL(
-        smtp_host,
-        smtp_port,
-        timeout=30
-    ) as smtp:
-        smtp.login(
-            smtp_user,
-            smtp_password
-        )
-
+    with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as smtp:
+        smtp.login(smtp_user, smtp_password)
         smtp.send_message(message)
 
     print("メールを送信しました")
 
 
 def main() -> None:
-    sources = load_json(
-        SOURCE_FILE,
-        []
-    )
-
-    state = load_json(
-        STATE_FILE,
-        {
-            "sources": {}
-        }
-    )
+    sources = load_json(SOURCE_FILE, [])
+    state = load_json(STATE_FILE, {"sources": {}})
 
     if "sources" not in state:
         state["sources"] = {}
@@ -372,73 +199,70 @@ def main() -> None:
     success_count = 0
 
     for source in sources:
-        name = source["name"]
-        url = source["url"]
+        name = source.get("name", "")
+        url = source.get("url", "")
 
         print("=" * 60)
         print(f"確認中: {name}")
         print(url)
 
         try:
-            # 新方式: ページから複数の項目を抽出する
-            items = fetch_items(source)
+            section_text = fetch_section_text(source, HEADING_TO_WATCH)
             success_count += 1
 
-            # state の既存ID群を取得（なければ空集合）
-            previous = state["sources"].get(name)
-            prev_ids = set(previous.get("items", {}).keys()) if previous else set()
+            if not section_text:
+                print(f"見出し『{HEADING_TO_WATCH}』をページ内で検出できませんでした")
+                continue
 
-            # 初回は既存を通知せず記録する
+            current_hash = make_hash(section_text)
+            previous = state["sources"].get(name)
+
             if previous is None:
-                print("初回確認のため、既存項目は通知せず記録します")
+                # 初回は通知せず記録
+                print("初回確認のため、該当セクションは通知せず記録します")
                 state["sources"][name] = {
                     "url": url,
-                    "items": {it["id"]: now_iso() for it in items}
+                    "section_hash": current_hash,
+                    "section_text": section_text,
+                    "saved_at": now_iso()
                 }
                 state_changed = True
                 continue
 
-            # 新規項目だけ抽出
-            new_items = []
-            for it in items:
-                if it["id"] not in prev_ids:
-                    # send_email 用に source 名を入れておく
-                    it["source_name"] = name
-                    new_items.append(it)
+            if previous.get("section_hash") != current_hash:
+                print("該当セクションが更新されました")
 
-            if new_items:
-                # 互換性維持のため、send_email に渡す前に必ず 'name' を設定します
-                for it in new_items:
-                    it['name'] = it.get('source_name', name)
+                new_item = {
+                    "id": current_hash,
+                    "title": HEADING_TO_WATCH,
+                    "url": url,
+                    "text": section_text,
+                    "source_name": name,
+                    "name": name
+                }
 
-                # 通知（既存の send_email を使う）
-                send_email(new_items)
+                # 送信
+                send_email([new_item])
 
-                # state に新規 id を追加
-                if name not in state["sources"]:
-                    state["sources"][name] = {"url": url, "items": {}}
-                for it in new_items:
-                    state["sources"][name]["items"][it["id"]] = now_iso()
-
+                # 保存
+                state["sources"][name] = {
+                    "url": url,
+                    "section_hash": current_hash,
+                    "section_text": section_text,
+                    "saved_at": now_iso()
+                }
                 state_changed = True
             else:
-                print("新規項目はありません")
+                print("対象セクションに変更はありません")
 
         except Exception as error:
             print(f"取得エラー: {error}")
 
     if success_count == 0:
-        raise RuntimeError(
-            "すべてのWebページの取得に失敗しました"
-        )
+        raise RuntimeError("すべてのWebページの取得に失敗しました")
 
-    # 状態を保存
     if state_changed:
-        save_json(
-            STATE_FILE,
-            state
-        )
-
+        save_json(STATE_FILE, state)
         print("通知済み情報を保存しました")
 
 
