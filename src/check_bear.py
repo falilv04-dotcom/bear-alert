@@ -112,18 +112,26 @@ def extract_section_by_heading(html_text: str, heading_text: str) -> str:
 
 
 def fetch_section_text(source: dict, heading_text: str) -> str:
-    """
-    指定 source の URL を取得して、heading_text に該当するセクションのテキストを返す。
-    """
     url = source.get("url", "").strip()
     if not url:
         raise RuntimeError("source.url が空です")
     headers = {"User-Agent": USER_AGENT}
     response = requests.get(url, headers=headers, timeout=30)
+    # 保存して確認できるようにする（デバッグ用）
+    debug_dir = ROOT_DIR / "data" / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^0-9A-Za-z_-]", "_", source.get("name","source"))
+    debug_path = debug_dir / f"page_{safe_name}.html"
+    try:
+        with open(debug_path, "w", encoding="utf-8") as f:
+            f.write(response.text)
+        print("Saved debug HTML to:", debug_path)
+    except Exception as e:
+        print("Failed to save debug HTML:", e)
+
     response.raise_for_status()
     html = response.text
     return extract_section_by_heading(html, heading_text)
-
 
 def send_email(items: List[Dict[str, str]]) -> None:
     """
