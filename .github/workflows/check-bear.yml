@@ -2,7 +2,6 @@ name: Check bear information (with Playwright)
 
 on:
   schedule:
-    # 毎時00分に実行（UTC）。日本時間で毎時00分にしたいならこのままでOK（cronはUTCだが毎時間の実行は差し支えなし）
     - cron: "0 * * * *"
   workflow_dispatch:
 
@@ -28,19 +27,49 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install libraries
-        # requirements.txt に playwright を入れておいてください（例: playwright==1.39.0）
+      - name: Install libraries (pip)
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright browsers
-        # Playwright のブラウザをインストールします。
-        # --with-deps はランナーに必要な依存も合わせてインストールします（ubuntu-latest向け）。
+      - name: Install Playwright system deps and browsers
         run: |
+          set -e
+
+          # update apt cache
+          sudo apt-get update
+
+          # Install common dependencies required by Chromium/Playwright
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            fonts-liberation \
+            libasound2 \
+            libatk1.0-0 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libdbus-1-3 \
+            libdrm2 \
+            libgbm1 \
+            libgtk-3-0 \
+            libnspr4 \
+            libnss3 \
+            libx11-xcb1 \
+            libxcomposite1 \
+            libxcursor1 \
+            libxdamage1 \
+            libxrandr2 \
+            libxss1 \
+            libpangocairo-1.0-0 \
+            libxkbcommon0 \
+            wget \
+            fonts-noto-color-emoji
+
+          # Ensure pip packages are installed (playwright included)
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+
+          # Install Playwright browser binaries (Chromium)
+          python -m playwright install chromium
 
       - name: Run check script
         env:
@@ -63,14 +92,11 @@ jobs:
       - name: Save notification state
         if: success()
         run: |
-          # Configure git user for the bot commit
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Stage the notified state file
           git add data/notified.json || true
 
-          # If there are changes, commit and push
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
