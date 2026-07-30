@@ -111,26 +111,49 @@ def extract_section_by_heading(html_text: str, heading_text: str) -> str:
     return ""
 
 
-def fetch_section_text(source: dict, heading_text: str) -> str:
+# Playwright を使う版の fetch_section_text
+# 注意: playwright がインストールされている前提です（requirements に追加）
+from playwright.sync_api import sync_playwright
+
+def fetch_section_text_playwright(source: dict, heading_text: str, timeout: int = 30000) -> str:
+    """
+    Playwright を使ってページを開き、JS実行後のHTMLからセクションを抽出する。
+    同期APIを使うため、GitHub Actions でもそのまま動きます。
+    """
     url = source.get("url", "").strip()
     if not url:
         raise RuntimeError("source.url が空です")
-    headers = {"User-Agent": USER_AGENT}
-    response = requests.get(url, headers=headers, timeout=30)
-    # 保存して確認できるようにする（デバッグ用）
-    debug_dir = ROOT_DIR / "data" / "debug"
-    debug_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = re.sub(r"[^0-9A-Za-z_-]", "_", source.get("name","source"))
-    debug_path = debug_dir / f"page_{safe_name}.html"
-    try:
-        with open(debug_path, "w", encoding="utf-8") as f:
-            f.write(response.text)
-        print("Saved debug HTML to:", debug_path)
-    except Exception as e:
-        print("Failed to save debug HTML:", e)
 
-    response.raise_for_status()
-    html = response.text
+    # 起動・ページ取得
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)  # headless で起動
+        context = browser.new_context()
+        page = context.new_page()
+
+        # ページを開く。networkidle まで待つ（必要なら wait_for_timeout を追加）
+        page.goto(url, wait_until="networkidle", timeout=timeout)
+
+        # ページのHTMLを取得（JSで描画済みのDOM）
+        html = page.content()
+
+        # デバッグ保存（data/debug に保存しておく）
+        try:
+            debug_dir = ROOT_DIR / "data" / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = re.sub(r"[^0-9A-Za-z_-]", "_", source.get("name", "source"))
+            debug_path = debug_dir / f"pw_page_{safe_name}.html"
+            with open(debug_path, "w", encoding="utf-8") as f:
+                f.write(html)
+            print("Saved Playwright debug HTML to:", str(debug_path))
+        except Exception as e:
+            print("Failed to save Playwright debug HTML:", e)
+
+        # 終了
+        page.close()
+        context.close()
+        browser.close()
+
+    # 取得したHTMLからセクションを抽出して返す
     return extract_section_by_heading(html, heading_text)
 
 def send_email(items: List[Dict[str, str]]) -> None:
