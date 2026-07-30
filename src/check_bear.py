@@ -13,16 +13,16 @@ from typing import Any, List, Dict
 import requests
 from bs4 import BeautifulSoup
 
-
 # プロジェクトの場所
 ROOT_DIR = Path(__file__).resolve().parents[1]
-
 SOURCE_FILE = ROOT_DIR / "config" / "sources.json"
 STATE_FILE = ROOT_DIR / "data" / "notified.json"
 
-
-# 監視する見出し（ページ上の正確な文章に合わせてください）
+# 監視する見出し（ページ上の正確な文言に合わせてください）
 HEADING_TO_WATCH = "滋賀県の最新出没傾向"
+
+# User-Agent（必要なら変更）
+USER_AGENT = "Mozilla/5.0 (compatible; BearAlert/1.0)"
 
 
 def now_iso() -> str:
@@ -42,7 +42,7 @@ def save_json(path: Path, data: Any) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def normalize_lines(soup: BeautifulSoup) -> List\[str]:
+def normalize_lines(soup):
     for tag in soup.find_all(["script", "style", "noscript", "svg"]):
         tag.decompose()
     text = soup.get_text("\n", strip=True)
@@ -65,14 +65,14 @@ def extract_section_by_heading(html_text: str, heading_text: str) -> str:
     """
     soup = BeautifulSoup(html_text, "html.parser")
 
-    # 1) 見出しタグ(h1..h6)を探す
+    # 1) 見出しタグ(h1..h6)を探す（部分一致）
     heading = None
     for tag_name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
         heading = soup.find(tag_name, string=lambda s: s and heading_text in s)
         if heading:
             break
 
-    # 2) 見出しとして strong/b/p 等を探す
+    # 2) 見出しとして strong/b/p/div も探す
     if not heading:
         heading = soup.find(lambda tag: tag.name in ("strong", "b", "p", "div") and tag.get_text() and heading_text in tag.get_text())
 
@@ -102,7 +102,6 @@ def extract_section_by_heading(html_text: str, heading_text: str) -> str:
     parent = heading.parent
     if parent:
         full = parent.get_text(" ", strip=True)
-        # 先頭の見出し文言を取り除く
         full = full.replace(heading_text, "", 1).strip()
         return full
 
@@ -113,11 +112,8 @@ def fetch_section_text(source: dict, heading_text: str) -> str:
     url = source.get("url", "").strip()
     if not url:
         raise RuntimeError("source.url が空です")
-    response = requests.get(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; BearAlert/1.0)"},
-        timeout=30
-    )
+    headers = {"User-Agent": USER_AGENT}
+    response = requests.get(url, headers=headers, timeout=30)
     response.raise_for_status()
     html = response.text
     return extract_section_by_heading(html, heading_text)
@@ -241,10 +237,8 @@ def main() -> None:
                     "name": name
                 }
 
-                # 送信
                 send_email([new_item])
 
-                # 保存
                 state["sources"][name] = {
                     "url": url,
                     "section_hash": current_hash,
