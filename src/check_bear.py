@@ -18,8 +18,11 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 SOURCE_FILE = ROOT_DIR / "config" / "sources.json"
 STATE_FILE = ROOT_DIR / "data" / "notified.json"
 
-# 監視する見出し（ページ上の正確な文言に合わせてください）
-HEADING_TO_WATCH = "滋賀県の最新出没傾向"
+# 監視する見出しのリスト（ページ上の正確な文言に合わせて必要に応じて編集）
+HEADING_LIST = [
+    "滋賀県の最新出没傾向",
+    "滋賀県の最新の出没情報"
+]
 
 # User-Agent（必要なら変更）
 USER_AGENT = "Mozilla/5.0 (compatible; BearAlert/1.0)"
@@ -60,7 +63,7 @@ def make_hash(text: str) -> str:
 
 def extract_section_by_heading(html_text: str, heading_text: str) -> str:
     """
-    指定見出しに続くセクションのテキストを返す。
+    指定見出しに続くセクションのテキストを返す（部分一致）。
     見出しが見つからなければ空文字を返す。
     """
     soup = BeautifulSoup(html_text, "html.parser")
@@ -72,7 +75,7 @@ def extract_section_by_heading(html_text: str, heading_text: str) -> str:
         if heading:
             break
 
-    # 2) 見出しとして strong/b/p/div も探す
+    # 2) 見出しとして strong/b/p/div 等も探す
     if not heading:
         heading = soup.find(lambda tag: tag.name in ("strong", "b", "p", "div") and tag.get_text() and heading_text in tag.get_text())
 
@@ -98,7 +101,7 @@ def extract_section_by_heading(html_text: str, heading_text: str) -> str:
     if texts:
         return "\n".join(texts).strip()
 
-    # 4) 兄弟がなければ親要素のテキストから切り出す（フォールバック）
+    # 4) 兄弟がない場合は親要素のテキストを返す（フォールバック）
     parent = heading.parent
     if parent:
         full = parent.get_text(" ", strip=True)
@@ -109,6 +112,9 @@ def extract_section_by_heading(html_text: str, heading_text: str) -> str:
 
 
 def fetch_section_text(source: dict, heading_text: str) -> str:
+    """
+    指定 source の URL を取得して、heading_text に該当するセクションのテキストを返す。
+    """
     url = source.get("url", "").strip()
     if not url:
         raise RuntimeError("source.url が空です")
@@ -197,57 +203,73 @@ def main() -> None:
     for source in sources:
         name = source.get("name", "")
         url = source.get("url", "")
-
         print("=" * 60)
         print(f"確認中: {name}")
         print(url)
 
         try:
-            section_text = fetch_section_text(source, HEADING_TO_WATCH)
+            updated_any = False
+
+            for heading_text in HEADING_LIST:
+                print(f"  チェック見出し: {heading_text}")
+
+                section_text = fetch_section_text(source, heading_text)
+                if not section_text:
+                    print(f"    見出し『{heading_text}』をページ内で検出できませんでした")
+                    continue
+
+                current_hash = make_hash(section_text)
+                previous = state["sources"].get(name)
+
+                # 初回: stateが無ければ見出しごとに保存（通知しない）
+                if previous is None:
+                    print("    初回確認のため、該当セクションは通知せず記録します")
+                    state["sources"][name] = {
+                        "url": url,
+                        "section_hashes": {heading_text: current_hash},
+                        "section_texts": {heading_text: section_text},
+                        "saved_at": now_iso()
+                    }
+                    state_changed = True
+                    # 初回は個別に登録→次の見出しへ
+                    continue
+
+                # ensure keys exist
+                if "section_hashes" not in previous:
+                    previous["section_hashes"] = {}
+                if "section_texts" not in previous:
+                    previous["section_texts"] = {}
+
+                prev_hash = previous["section_hashes"].get(heading_text)
+
+                if prev_hash != current_hash:
+                    print(f"    見出し『{heading_text}』が更新されました")
+
+                    new_item = {
+                        "id": current_hash,
+                        "title": heading_text,
+                        "url": url,
+                        "text": section_text,
+                        "source_name": name,
+                        "name": name
+                    }
+
+                    send_email([new_item])
+
+                    # 保存（上書き）
+                    state["sources"][name]["section_hashes"][heading_text] = current_hash
+                    state["sources"][name]["section_texts"][heading_text] = section_text
+                    state["sources"][name]["saved_at"] = now_iso()
+
+                    state_changed = True
+                    updated_any = True
+                else:
+                    print(f"    見出し『{heading_text}』に変更はありません")
+
+            if not updated_any:
+                print("  このソースの監視見出しに更新はありません")
+
             success_count += 1
-
-            if not section_text:
-                print(f"見出し『{HEADING_TO_WATCH}』をページ内で検出できませんでした")
-                continue
-
-            current_hash = make_hash(section_text)
-            previous = state["sources"].get(name)
-
-            if previous is None:
-                # 初回は通知せず記録
-                print("初回確認のため、該当セクションは通知せず記録します")
-                state["sources"][name] = {
-                    "url": url,
-                    "section_hash": current_hash,
-                    "section_text": section_text,
-                    "saved_at": now_iso()
-                }
-                state_changed = True
-                continue
-
-            if previous.get("section_hash") != current_hash:
-                print("該当セクションが更新されました")
-
-                new_item = {
-                    "id": current_hash,
-                    "title": HEADING_TO_WATCH,
-                    "url": url,
-                    "text": section_text,
-                    "source_name": name,
-                    "name": name
-                }
-
-                send_email([new_item])
-
-                state["sources"][name] = {
-                    "url": url,
-                    "section_hash": current_hash,
-                    "section_text": section_text,
-                    "saved_at": now_iso()
-                }
-                state_changed = True
-            else:
-                print("対象セクションに変更はありません")
 
         except Exception as error:
             print(f"取得エラー: {error}")
