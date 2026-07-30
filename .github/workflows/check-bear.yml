@@ -36,14 +36,16 @@ jobs:
         run: |
           set -e
 
-          # update apt cache
+          # Update apt cache
           sudo apt-get update
 
           # Install common dependencies required by Chromium/Playwright
+          # Use packages that provide libasound functionality on ubuntu-latest
           sudo apt-get install -y --no-install-recommends \
             ca-certificates \
             fonts-liberation \
-            libasound2 \
+            liboss4-salsa-asound2 \
+            libasound2t64 \
             libatk1.0-0 \
             libatk-bridge2.0-0 \
             libcups2 \
@@ -61,8 +63,10 @@ jobs:
             libxss1 \
             libpangocairo-1.0-0 \
             libxkbcommon0 \
-            wget \
-            fonts-noto-color-emoji
+            wget
+
+          # Optional fonts (helps rendering)
+          sudo apt-get install -y --no-install-recommends fonts-noto-color-emoji
 
           # Ensure pip packages are installed (playwright included)
           python -m pip install --upgrade pip
