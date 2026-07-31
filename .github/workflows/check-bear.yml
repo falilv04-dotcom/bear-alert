@@ -2,7 +2,6 @@ name: Check bear information (requests only)
 
 on:
   schedule:
-    # 毎時00分に実行（UTC）。必要に応じて cron を変更してください
     - cron: "0 * * * *"
   workflow_dispatch:
 
@@ -33,7 +32,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run check script
+      - name: Check web pages
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -56,9 +55,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git add data/notified.json || true
-
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
